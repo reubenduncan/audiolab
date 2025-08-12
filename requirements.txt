@@ -1,0 +1,14 @@
+whisper
+gradio
+huggingface_hub
+transformers
+datasets
+snac
+librosa
+numpy
+soundfile
+scipy
+sentencepiece
+protobuf
+accelerate
+unsloth
