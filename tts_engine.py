@@ -77,9 +77,9 @@ class OrpheusTTSEngine:
                 print("✅ Base model loaded successfully")
             
             self.model.eval()
-            if torch.cuda.is_available():
-                self.model = self.model.to("cuda")
-                print(f"Model loaded on {self.device}")
+            # if torch.cuda.is_available():
+            #     self.model = self.model.to("cuda")
+            #     print(f"Model loaded on {self.device}")
             
             # Load SNAC model
             print("Loading SNAC model...")
@@ -164,9 +164,18 @@ class OrpheusTTSEngine:
             input_ids = inputs["input_ids"]
             attention_mask = inputs["attention_mask"]
             
+            start_token = torch.tensor([[ 128259]], dtype=torch.int64) # Start of human
+            end_tokens = torch.tensor([[128009, 128260]], dtype=torch.int64) # End of text, End of human
+
+            input_ids = torch.cat([torch.tensor([[128263]]), start_token, input_ids, end_tokens], dim=1) # SOH SOT Text EOT EOH
+            attention_mask = torch.cat([torch.tensor([[0, 1]]), attention_mask, torch.tensor([[1, 1]])], dim=1)
+            
             if torch.cuda.is_available():
                 input_ids = input_ids.to("cuda")
                 attention_mask = attention_mask.to("cuda")
+                
+            print(input_ids.shape)
+            print(attention_mask.shape)
             
             # Generate tokens
             with torch.inference_mode():
@@ -206,9 +215,13 @@ class OrpheusTTSEngine:
             # Convert tokens to audio codes and decode
             if len(filtered_tokens) == 0:
                 return None, "❌ Error: No valid audio tokens generated"
-            
+
+            new_length = (len(filtered_tokens) // 7) * 7
+            filtered_tokens = filtered_tokens[:new_length]
+
             # Adjust token values for SNAC decoding
-            adjusted_tokens = [token - 128266 for token in filtered_tokens if token >= 128266]
+            # adjusted_tokens = [token - 128266 for token in filtered_tokens if token >= 128266]
+            adjusted_tokens = [token - 128266 for token in filtered_tokens]
             
             if len(adjusted_tokens) == 0:
                 return None, "❌ Error: No valid audio codes after adjustment"
@@ -239,7 +252,98 @@ class OrpheusTTSEngine:
             import traceback
             traceback.print_exc()
             return None, error_msg
+        
+    def inference(self, prompts: list[str], chosen_voice: str, model: str = "Orpheus TTS"):
+        FastLanguageModel.for_inference(self.model) # Enable native 2x faster inference
 
+        # Moving snac_model cuda to cpu
+        self.snac_model.to("cpu")
+
+        prompts_ = [(f"{chosen_voice}: " + p) if chosen_voice else p for p in prompts]
+
+        all_input_ids = []
+
+        for prompt in prompts_:
+            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+            all_input_ids.append(input_ids)
+
+        start_token = torch.tensor([[ 128259]], dtype=torch.int64) # Start of human
+        end_tokens = torch.tensor([[128009, 128260]], dtype=torch.int64) # End of text, End of human
+
+        all_modified_input_ids = []
+        for input_ids in all_input_ids:
+            modified_input_ids = torch.cat([start_token, input_ids, end_tokens], dim=1) # SOH SOT Text EOT EOH
+            all_modified_input_ids.append(modified_input_ids)
+
+        all_padded_tensors = []
+        all_attention_masks = []
+        max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
+        for modified_input_ids in all_modified_input_ids:
+            padding = max_length - modified_input_ids.shape[1]
+            padded_tensor = torch.cat([torch.full((1, padding), 128263, dtype=torch.int64), modified_input_ids], dim=1)
+            attention_mask = torch.cat([torch.zeros((1, padding), dtype=torch.int64), torch.ones((1, modified_input_ids.shape[1]), dtype=torch.int64)], dim=1)
+            all_padded_tensors.append(padded_tensor)
+            all_attention_masks.append(attention_mask)
+
+        all_padded_tensors = torch.cat(all_padded_tensors, dim=0)
+        all_attention_masks = torch.cat(all_attention_masks, dim=0)
+
+        if torch.cuda.is_available():
+            input_ids = all_padded_tensors.to("cuda")
+            attention_mask = all_attention_masks.to("cuda")
+
+        # Generate tokens
+        with torch.inference_mode():
+            generated_ids = self.model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=1200,
+                do_sample=True,
+                temperature=0.6,
+                top_p=0.95,
+                repetition_penalty=1.1,
+                num_return_sequences=1,
+                eos_token_id=128258,
+                use_cache = True
+            )
+        
+        # Post-process generated tokens
+        token_to_find = 128257
+        token_to_remove = 128258
+
+        # Find the last occurrence of the special token
+        token_indices = (generated_ids == token_to_find).nonzero(as_tuple=True)
+        if len(token_indices[1]) > 0:
+            last_occurrence_idx = token_indices[1][-1].item()
+            cropped_tensor = generated_ids[:, last_occurrence_idx+1:]
+        else:
+            cropped_tensor = generated_ids
+
+        # Remove end-of-sequence tokens
+        mask = cropped_tensor != token_to_remove
+        processed_rows = []
+
+        for row in cropped_tensor:
+            masked_row = row[row != token_to_remove]
+            processed_rows.append(masked_row)
+
+        code_lists = []
+
+        # Adjust token values for SNAC decoding
+        for row in processed_rows:
+            row_length = row.size(0)
+            new_length = (row_length // 7) * 7
+            trimmed_row = row[:new_length]
+            trimmed_row = [t - 128266 for t in trimmed_row]
+            code_lists.append(trimmed_row)
+
+        # Decode audio codes using SNAC
+        my_samples = []
+        for code_list in code_lists:
+            samples = self.redistribute_codes(code_list)
+            my_samples.append(samples)
+            
+        return my_samples
 
 # Global TTS engine instance
 tts_engine = OrpheusTTSEngine()

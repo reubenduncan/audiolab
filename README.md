@@ -1,6 +1,25 @@
+---
+title: Audiolab
+emoji: 🏃
+colorFrom: purple
+colorTo: yellow
+sdk: gradio
+sdk_version: 5.42.0
+app_file: main.py
+pinned: false
+---
+
 # AudioLab
 
 Gradio app combining multiple audio generation models for generating speech, music, sound effects, and virtual instrument generators, and more.
+
+## Running
+
+HMR mode for development:
+
+```bash
+gradio main.py --demo-name app
+```
 
 ## Installation
 
