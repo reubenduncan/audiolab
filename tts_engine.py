@@ -5,6 +5,7 @@ Orpheus TTS Engine - Handles text-to-speech generation using the Orpheus model.
 import torch
 import torchaudio.transforms as T
 from unsloth import FastLanguageModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from snac import SNAC
 import soundfile as sf
 import tempfile
@@ -80,6 +81,10 @@ class OrpheusTTSEngine:
             # if torch.cuda.is_available():
             #     self.model = self.model.to("cuda")
             #     print(f"Model loaded on {self.device}")
+            
+            self.model = AutoModelForCausalLM.from_pretrained(self.base_model, torch_dtype=torch.bfloat16)
+            self.model.cuda()
+            self.tokenizer = AutoTokenizer.from_pretrained(self.base_model)
             
             # Load SNAC model
             print("Loading SNAC model...")
