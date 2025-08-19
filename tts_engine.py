@@ -1,20 +1,16 @@
-"""
-Orpheus TTS Engine - Handles text-to-speech generation using the Orpheus model.
-"""
-
 import torch
 import torchaudio.transforms as T
 from unsloth import FastLanguageModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import pipeline, TrainingArguments, Trainer, DataCollatorForSeq2Seq
 from snac import SNAC
 import soundfile as sf
 import tempfile
 import os
 from typing import Optional, Tuple
+from datasets import load_dataset
 
-
-class OrpheusTTSEngine:
-    """Orpheus TTS model handler for text-to-speech generation."""
+class TTSEngine:
+    """TTS model handler for text-to-speech generation."""
     
     def __init__(self):
         self.model = None
@@ -22,7 +18,7 @@ class OrpheusTTSEngine:
         self.snac_model = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.is_initialized = False
-        self.base_model = "unsloth/Llama-3.2-3B-Instruct"
+        self.base_model = "canopylabs/orpheus-3b-0.1-ft"
     
     def initialize(self, lora_model_path: str = "./orpheus-lora-model") -> bool:
         """
@@ -38,7 +34,7 @@ class OrpheusTTSEngine:
             return True
             
         try:
-            print("Loading Orpheus TTS model...")
+            print("Loading TTS model...")
             
             # Try to load LoRA model first
             try:
@@ -78,13 +74,8 @@ class OrpheusTTSEngine:
                 print("✅ Base model loaded successfully")
             
             self.model.eval()
-            # if torch.cuda.is_available():
-            #     self.model = self.model.to("cuda")
-            #     print(f"Model loaded on {self.device}")
             
-            self.model = AutoModelForCausalLM.from_pretrained(self.base_model, torch_dtype=torch.bfloat16)
-            self.model.cuda()
-            self.tokenizer = AutoTokenizer.from_pretrained(self.base_model)
+            print("✅ Base model loaded successfully")
             
             # Load SNAC model
             print("Loading SNAC model...")
@@ -142,12 +133,50 @@ class OrpheusTTSEngine:
         
         return audio_hat
     
-    def generate_speech(self, text: str, model_name: str = "Orpheus TTS") -> Tuple[Optional[str], str]:
+    def train_model(self, prompt: str, model_name: str = "Orpheus TTS", files: list = []) -> Tuple[Optional[str], str]:
+        """
+        Train a LoRA model from text and audio files.
+        
+        Args:
+            prompt: Text to convert to speech
+            model_name: Name of the model (for status reporting)
+            files: List of audio files to use for training
+            
+        Returns:
+            Tuple of (audio_path, status_message)
+        """        
+        dataset = load_dataset("MrDragonFox/Elise", split="train")
+        
+        trainer = Trainer(
+            model = self.model,
+            train_dataset = dataset,
+            args = TrainingArguments(
+                per_device_train_batch_size = 1,
+                gradient_accumulation_steps = 4,
+                warmup_steps = 5,
+                # num_train_epochs = 1, # Set this for 1 full training run.
+                max_steps = 60,
+                learning_rate = 2e-4,
+                logging_steps = 1,
+                optim = "adamw_8bit",
+                weight_decay = 0.01,
+                lr_scheduler_type = "linear",
+                seed = 3407,
+                output_dir = "outputs",
+                report_to = "none", # Use this for WandB etc
+            ),
+        )
+        
+        trainer_stats = trainer.train()
+        
+        return trainer_stats
+        
+    def generate_speech(self, prompt: str, model_name: str = "Orpheus TTS") -> Tuple[Optional[str], str]:
         """
         Generate speech from text using the Orpheus TTS model.
         
         Args:
-            text: Text to convert to speech
+            prompt: Text to convert to speech
             model_name: Name of the model (for status reporting)
             
         Returns:
@@ -157,13 +186,10 @@ class OrpheusTTSEngine:
             if not self.initialize():
                 return None, "❌ Error: Failed to initialize TTS models"
         
-        if not text.strip():
+        if not prompt.strip():
             return None, "❌ Error: Please provide text to convert to speech"
         
         try:
-            # Format the prompt for TTS generation
-            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a helpful assistant that converts text to speech.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n<|reserved_special_token_0|>"
-            
             # Tokenize the input
             inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=2048)
             input_ids = inputs["input_ids"]
@@ -178,9 +204,6 @@ class OrpheusTTSEngine:
             if torch.cuda.is_available():
                 input_ids = input_ids.to("cuda")
                 attention_mask = attention_mask.to("cuda")
-                
-            print(input_ids.shape)
-            print(attention_mask.shape)
             
             # Generate tokens
             with torch.inference_mode():
@@ -258,17 +281,29 @@ class OrpheusTTSEngine:
             traceback.print_exc()
             return None, error_msg
         
-    def inference(self, prompts: list[str], chosen_voice: str, model: str = "Orpheus TTS"):
-        FastLanguageModel.for_inference(self.model) # Enable native 2x faster inference
-
-        # Moving snac_model cuda to cpu
-        self.snac_model.to("cpu")
-
-        prompts_ = [(f"{chosen_voice}: " + p) if chosen_voice else p for p in prompts]
-
+    def inference(self, prompts: list[str], model: str = "Orpheus TTS"):
+        """
+        Generate speech from text using the Orpheus TTS model.
+        
+        Args:
+            prompts: List of prompts to convert to speech
+            model: Selected TTS model
+            
+        Returns:
+            Tuple of (audio_path, status_message)
+        """
+        if not self.is_initialized:
+            if not self.initialize():
+                return None, "❌ Error: Failed to initialize TTS models"
+        
+        prompts = [p.strip() for p in prompts if p.strip()]
+        
+        if len(prompts) == 0:
+            return None, "❌ Error: Please provide text to convert to speech"
+        
         all_input_ids = []
 
-        for prompt in prompts_:
+        for prompt in prompts:
             input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
             all_input_ids.append(input_ids)
 
@@ -349,6 +384,10 @@ class OrpheusTTSEngine:
             my_samples.append(samples)
             
         return my_samples
+    
+    def save_model(self):
+        self.model.save_pretrained("./orpheus-lora-model")
+        self.tokenizer.save_pretrained("./orpheus-lora-model")
 
 # Global TTS engine instance
-tts_engine = OrpheusTTSEngine()
+tts_engine = TTSEngine()

@@ -1,41 +1,23 @@
-"""
-UI Components - Gradio interface components for the Audio Lab application.
-"""
-
 import gradio as gr
 from typing import List
 from tts_engine import tts_engine
 from audio_generators import music_generator, sfx_generator, audio_separator
 
-
-def create_tts_interface():
+def create_tts_inference_interface():
     """Create the TTS tab interface."""
     with gr.Column():
         gr.Markdown("## Text-to-Speech Generation")
-        gr.Markdown("Upload audio files to finetune a LoRA model, select a TTS model, and enter text to generate speech.")
         
         with gr.Row():
             with gr.Column(scale=1):
-                # Audio files upload for LoRA finetuning
-                audio_upload = gr.File(
-                    label="Upload Audio Files for LoRA Training",
-                    file_count="multiple",
-                    file_types=["audio"],
-                    height=150
-                )
-                
                 # Model selection dropdown
                 model_dropdown = gr.Dropdown(
                     choices=[
-                        "Orpheus TTS (LoRA Finetuned)",
-                        "Orpheus TTS (Base Model)",
-                        "XTTS-v2",
-                        "Tortoise TTS",
-                        "Bark",
-                        "Coqui TTS"
+                        "canopylabs/orpheus-3b-0.1-ft",
+                        "reubenduncan/orpheus_model_bastila",
                     ],
                     label="Select TTS Model",
-                    value="Orpheus TTS (LoRA Finetuned)"
+                    value="canopylabs/orpheus-3b-0.1-ft"
                 )
                 
             with gr.Column(scale=2):
@@ -59,11 +41,70 @@ def create_tts_interface():
         
         # Connect the generate button to the TTS function
         generate_btn.click(
-            fn=lambda text, model, files: tts_engine.generate_speech(text, model),
-            inputs=[text_input, model_dropdown, audio_upload],
+            fn=lambda text, model: tts_engine.generate_speech(text, model),
+            inputs=[text_input, model_dropdown],
             outputs=[audio_output, status_output]
         )
 
+def create_tts_finetuning_interface():
+    """Create the TTS finetuning interface."""
+    with gr.Column():
+        gr.Markdown("## TTS Finetuning")
+        gr.Markdown("Upload audio files to finetune a LoRA model, select a TTS model, and enter text to generate speech.")
+        
+        with gr.Row():
+            with gr.Column(scale=1):
+                # Audio files upload for LoRA finetuning
+                audio_upload = gr.File(
+                    label="Upload Audio Files for LoRA Training",
+                    file_count="multiple",
+                    file_types=["audio"],
+                    height=150
+                )
+                
+                # Model selection dropdown
+                model_dropdown = gr.Dropdown(
+                    choices=[
+                        "canopylabs/orpheus-3b-0.1-ft",
+                        "reubenduncan/orpheus_model_bastila",
+                    ],
+                    label="Select TTS Model",
+                    value="canopylabs/orpheus-3b-0.1-ft"
+                )
+                
+            with gr.Column(scale=2):
+                # File selector to select multiple wav files
+                file_selector = gr.Files(
+                    label="Select WAV Files",
+                    file_count="multiple",
+                    file_types=["wav"],
+                    height=150
+                )
+                
+                # Generate button
+                generate_btn = gr.Button("Train Model", variant="primary")
+        
+        # with gr.Row():
+        #     # Output audio player
+        #     audio_output = gr.Audio(label="Generated Speech", type="filepath")
+            
+        # Status output
+        status_output = gr.Textbox(label="Status", lines=3, interactive=False)
+        
+        # Connect the generate button to the TTS function
+        generate_btn.click(
+            fn=lambda text, model, files: tts_engine.train_model(text, model, files),
+            inputs=[text_input, model_dropdown, file_selector],
+            outputs=[status_output]
+        )
+
+def create_tts_interface():
+    with gr.Tabs():
+        with gr.Tab("Inference"):
+            create_tts_inference_interface()
+        with gr.Tab("Finetuning"):
+            create_tts_finetuning_interface()
+    
 
 def create_music_interface():
     """Create the Music Generation tab interface."""
